@@ -467,7 +467,7 @@ def _quantize(
     if global_scale is not None:
         scale = scale.to(global_scale.dtype) / global_scale
 
-    scaled = x / scale
+    scaled = x / scale.to(x.dtype)
 
     if zero_point is not None:
         scaled += zero_point.to(x.dtype)
