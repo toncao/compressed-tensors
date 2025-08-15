@@ -16,6 +16,7 @@ import warnings
 from copy import deepcopy
 from typing import List, Optional
 
+from compressed_tensors.config import CompressionFormat
 from compressed_tensors.quantization.quant_args import (
     DynamicType,
     QuantizationArgs,
@@ -42,18 +43,21 @@ class QuantizationScheme(BaseModel):
     :param weights: quantization config for layer weights
     :param input_activations: quantization config for layer inputs
     :param output_activations: quantization config for layer outputs
+    :param format: CompressionFormat for the layer
     """
 
     targets: List[str]
     weights: Optional[QuantizationArgs] = None
     input_activations: Optional[QuantizationArgs] = None
     output_activations: Optional[QuantizationArgs] = None
+    format: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_model_after(model: "QuantizationScheme") -> "QuantizationScheme":
         inputs = model.input_activations
         outputs = model.output_activations
         weights = model.weights
+        format = model.format
 
         if inputs is not None:
             if inputs.actorder is not None:
@@ -62,6 +66,11 @@ class QuantizationScheme(BaseModel):
         if outputs is not None:
             if outputs.actorder is not None:
                 raise ValueError("Cannot apply actorder to output activations")
+
+        if format == CompressionFormat.mixed_precision.value:
+            raise ValueError(
+                "mixed-precision cannot be set as a format for a QuantizationScheme"
+            )
 
         if (
             inputs
