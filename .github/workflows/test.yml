@@ -89,6 +89,16 @@ jobs:
               with:
                   python-version: ${{ inputs.python }}
 
+            - name: install system dependencies
+              run: |
+                if command -v g++ >/dev/null 2>&1; then
+                  echo "found g++ compiler"
+                else
+                   echo "installing g++ etc compilers..."
+                   sudo apt update && sudo apt install -y g++ gcc
+                fi
+              shell: bash
+
             - name: checkout code
               id: checkout
               uses: actions/checkout@v4
