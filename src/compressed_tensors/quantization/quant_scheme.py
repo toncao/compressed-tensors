@@ -60,6 +60,26 @@ class QuantizationScheme(BaseModel):
         format = model.format
 
         if inputs is not None:
+            if inputs.strategy not in (
+                QuantizationStrategy.TOKEN,
+                QuantizationStrategy.TENSOR,
+                QuantizationStrategy.GROUP,
+                QuantizationStrategy.TENSOR_GROUP,
+            ):
+                if (
+                    inputs.strategy == QuantizationStrategy.GROUP
+                    and inputs.dynamic is True
+                ):
+                    raise NotImplementedError(
+                        "Static and local group-wise activation "
+                        "quantization is not supported"
+                    )
+
+                raise NotImplementedError(
+                    f"Using {inputs.strategy} strategy is not supported for "
+                    "activation quantization"
+                )
+
             if inputs.actorder is not None:
                 raise ValueError("Cannot apply actorder to input activations")
 

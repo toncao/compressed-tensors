@@ -50,7 +50,6 @@ from compressed_tensors.utils import (
     get_offloaded_device,
     get_safetensors_folder,
     has_offloaded_params,
-    merge_names,
     register_offload_parameter,
     update_parameter_data,
 )
@@ -224,7 +223,8 @@ class ModelCompressor:
             s_config = compression_config.sparsity_config
             return s_config.model_dump() if s_config is not None else None
 
-        return compression_config.get(SPARSITY_CONFIG_NAME, None)
+        # explicitly return None if {} in config
+        return compression_config.get(SPARSITY_CONFIG_NAME, None) or None
 
     @staticmethod
     def parse_quantization_config(
@@ -319,112 +319,6 @@ class ModelCompressor:
                 ] = BaseCompressor.load_from_registry(
                     format, config=quantization_config
                 )
-
-    # ----- used by hf quantizer ----- #
-
-    def get_missing_module_keys(self, model: Module) -> List[str]:
-        """
-        Identifies the expected missing weight keys in the compressed state_dict.
-
-        When a model undergoes sparsity or quantization compression, certain
-        weight tensors may be absent from the checkpoint by virtue of compression.
-        This function determines which weight keys are missing based on the
-        applied compression techniques.
-
-        :param model: The PyTorch model to check for missing keys.
-        :return: A list of missing keys expected in the compressed state_dict.
-        """
-        missing_keys = set()
-
-        # Determine missing keys due to sparsity compression
-        if (
-            self.sparsity_compressor
-            and self.sparsity_config.format != CompressionFormat.dense.value
-        ):
-            sparse_targets = match_named_modules(
-                model=model,
-                targets=self.sparsity_config.targets,
-                ignore=self.sparsity_config.ignore,
-            )
-
-            missing_keys.update(
-                merge_names(target_name, "weight")
-                for target_name, _module in sparse_targets
-            )
-
-        # Determine missing keys due to pack quantization
-        if (
-            self.quantization_compressor
-            and self.quantization_config.format
-            == CompressionFormat.pack_quantized.value
-        ):
-            for scheme in self.quantization_config.config_groups.values():
-                quant_targets = match_named_modules(
-                    model=model,
-                    targets=scheme.targets,
-                    ignore=self.quantization_config.ignore,
-                )
-                missing_keys.update(
-                    merge_names(target_name, "weight")
-                    for target_name, _module in quant_targets
-                )
-
-        return list(missing_keys)
-
-    def get_unexpected_file_keys(self, model: Module) -> List[str]:
-        """
-        Identifies extra keys introduced by the compression process in the
-        compressed state_dict that are not expected by the model graph.
-
-        During sparsity or quantization compression, additional metadata or
-        auxiliary parameters may be stored in the checkpoint, which do not
-        correspond to any parameter in the original model. These keys are
-        typically introduced to support the reconstruction of compressed weights.
-
-        For example, Sparse24Bitmask compression may introduce keys such as
-        'compressed', 'bitmask', and 'shape' in the checkpoint, which are
-        not part of the original model parameters.
-
-        :param model: The PyTorch model to check for unexpected keys.
-        :return: A list of extra keys introduced by the compression process
-                that are not expected by the model.
-        """
-
-        unexpected_keys = set()
-
-        # Identify unexpected keys from sparsity compression
-        if (
-            self.sparsity_compressor
-            and self.sparsity_config.format != CompressionFormat.dense.value
-        ):
-            sparse_targets = match_named_modules(
-                model=model,
-                targets=self.sparsity_config.targets,
-                ignore=self.sparsity_config.ignore,
-            )
-            unexpected_keys.update(
-                merge_names(target_name, param)
-                for target_name, _module in sparse_targets
-                for param in self.sparsity_compressor.compression_param_names
-            )
-
-        # Identify unexpected keys from quantization compression
-        if self.quantization_compressor:
-            for scheme in self.quantization_config.config_groups.values():
-                quant_targets = match_named_modules(
-                    model=model,
-                    targets=scheme.targets,
-                    ignore=self.quantization_config.ignore,
-                )
-                for quant_compressor in self.quantization_compressor.values():
-                    unexpected_keys.update(
-                        merge_names(target_name, param)
-                        for target_name, _module in quant_targets
-                        for param in quant_compressor.compression_param_names
-                        if param != "weight"
-                    )
-
-        return list(unexpected_keys)
 
     # ----- model memory compression/decompression pathways ----- #
 
@@ -712,17 +606,16 @@ class ModelCompressor:
                 # Load activation scales/zp or any other quantization parameters
                 # Conditionally load the weight quantization parameters if we have a
                 # dense compressor or if a sparsity compressor has already been applied
+                load_weight_qparams = sparse_decompressed or isinstance(
+                    quant_compressor, DenseCompressor
+                )
                 load_pretrained_quantization_parameters(
                     model,
                     model_path,
                     # TODO: all weight quantization params will be moved to the
                     # compressor in a follow-up including initialization
-                    load_weight_quantization=(
-                        sparse_decompressed
-                        or isinstance(quant_compressor, DenseCompressor)
-                    ),
+                    load_weight_qparams=load_weight_qparams,
                 )
-
             model_path_or_state_dict = (
                 model.state_dict() if sparse_decompressed else model_path
             )
@@ -732,7 +625,9 @@ class ModelCompressor:
             )
             # TODO: all weight quantization params will be moved to the compressor
             # to prevent duplicate parameter updates in update_parameter_data
-            self._replace_weights(dense_gen, model)
+            self._replace_weights(
+                dense_gen, model, load_weight_qparams=not load_weight_qparams
+            )
 
             def freeze_quantization_status(module):
                 module.quantization_status = QuantizationStatus.FROZEN
@@ -819,7 +714,9 @@ class ModelCompressor:
             param = torch.nn.Parameter(data.to(device), requires_grad=requires_grad)
             register_offload_parameter(module, param_name, param)
 
-    def _replace_weights(self, dense_weight_generator, model: Module):
+    def _replace_weights(
+        self, dense_weight_generator, model: Module, load_weight_qparams: bool = True
+    ):
         """
         Replace the weights of the model with the
         provided dense weights.
@@ -847,6 +744,7 @@ class ModelCompressor:
                     # decompression in init to be consistent with loading which happens
                     # later as well however, update_data does a good shape check -
                     # should be moved to the compressor
+
                     if param_name == "weight":
                         delattr(module, param_name)
                         requires_grad = param_data.dtype in (
@@ -858,7 +756,7 @@ class ModelCompressor:
                             param_data.to(device), requires_grad=requires_grad
                         )
                         register_offload_parameter(module, param_name, param)
-                    else:
+                    elif load_weight_qparams:
                         # Should already be registered to the correct device for
                         # for scales/zero-points
                         update_parameter_data(module, param_data, param_name)
