@@ -113,8 +113,8 @@ class QuantizationConfig(BaseModel):
     :param config_groups: dict of QuantizationSchemes specifying the quantization
     settings for each quantized layer. A group could also be a reference to
     a predefined scheme name, mapped to a list of its target layers/classes
-    :param quant_method: a constant used to differentiate sparseML quantization from
-    other quantization configs
+    :param quant_method: a constant used to differentiate compressed-tensors
+    quantization from other quantization configs
     :param format: specifies how the quantized model is stored on disk
     :quantization_status: specifies the current status of all quantized layers. It is
         assumed all layers are in the same state.
@@ -165,7 +165,7 @@ class QuantizationConfig(BaseModel):
 
     @staticmethod
     def from_pretrained(
-        model: Module, format: Optional[str] = None
+        model: Module, format: Optional[Union[str, list]] = None
     ) -> Optional["QuantizationConfig"]:
         """
         Converts a model into its associated QuantizationConfig based on the
@@ -185,7 +185,8 @@ class QuantizationConfig(BaseModel):
                     ignore[layer_type] = []
                 ignore[layer_type].append(name)
             else:
-                quantization_status = submodule.quantization_status
+                if hasattr(submodule, "quantization_status"):
+                    quantization_status = submodule.quantization_status
                 scheme = submodule.quantization_scheme
                 quantization_type_names.add(layer_type)
 

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+from typing import List, Optional
 
 import torch
 from compressed_tensors.transform import TransformArgs, TransformScheme
@@ -52,7 +52,7 @@ class HadamardFactory(TransformFactory):
         :param args: defines how the transform will be applied to the module
         """
         assert hasattr(module, "weight")
-        size = get_transform_size(module, args.location, self.scheme.head_dim)
+        size = get_transform_size(module, args.location, self.scheme.block_size)
         exec_device = get_execution_device(module)
         device = get_offloaded_device(module)
         precision = self.scheme.precision if args.is_online() else torch.float64
@@ -84,6 +84,8 @@ class HadamardFactory(TransformFactory):
 
 
 class HadamardTransform(TransformBase):
+    _dynamic_tied_weights_keys: List[str] = ["weight", "perm"]
+
     def __init__(
         self,
         weight: Parameter,
